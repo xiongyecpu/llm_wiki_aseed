@@ -6,6 +6,13 @@
 
 ---
 
+## [2026-06-06 09:57] - [Codex]
+- **当前状态**: 🟡 进行中
+- **本次改动**: 已将 `codex/addsendtollmwiki` 推送到 GitHub；尝试用 GitHub connector 创建 draft PR 被 integration 权限拒绝，安装 `gh` 后发现本机尚未登录 GitHub CLI。
+- **涉及文件**:
+  - `.agent/stats.md` (记录 PR 发布流程当前状态)
+- **下一步要做**: 用户完成 `gh auth login` 后运行 `gh pr create --draft`，或直接打开 GitHub 提供的新建 PR 页面从 `codex/addsendtollmwiki` 合并到 `main`。
+
 ## [2026-06-06 09:49] - [Codex]
 - **当前状态**: 🟢 已完成
 - **本次改动**: 修复 Finder 右键菜单不出现的问题：安装器现在会为 `Add to LLM Wiki.workflow` 写入 `Contents/Info.plist` 的 `NSServices` 元数据；同时补齐当前已安装 workflow 的 `Info.plist`，刷新 Services 缓存并重启 Finder。
