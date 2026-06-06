@@ -6,6 +6,7 @@ use tiny_http::{Header, Method, Response, Server};
 static CURRENT_PROJECT: Mutex<String> = Mutex::new(String::new());
 static ALL_PROJECTS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new()); // (name, path)
 static PENDING_CLIPS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new()); // (projectPath, filePath)
+static PENDING_FILE_ADDS: Mutex<Vec<(String, String)>> = Mutex::new(Vec::new()); // (projectPath, filePath)
 
 /// Daemon status: 0=starting, 1=running, 2=port_conflict, 3=error
 static DAEMON_STATUS: AtomicU8 = AtomicU8::new(0);
@@ -235,6 +236,29 @@ pub fn start_clip_server() {
                         }
                         let _ = request.respond(response);
                     }
+                    (&Method::Get, "/files/pending") => {
+                        let mut pending = PENDING_FILE_ADDS.lock().unwrap();
+                        let files_json: Vec<serde_json::Value> = pending
+                            .iter()
+                            .map(|(proj, file)| {
+                                serde_json::json!({
+                                    "projectPath": proj,
+                                    "filePath": file,
+                                })
+                            })
+                            .collect();
+                        let body = serde_json::json!({
+                            "ok": true,
+                            "files": files_json,
+                        })
+                        .to_string();
+                        pending.clear();
+                        let mut response = Response::from_string(body);
+                        for h in &cors_headers {
+                            response.add_header(h.clone());
+                        }
+                        let _ = request.respond(response);
+                    }
                     (&Method::Post, "/clip") => {
                         let mut body = String::new();
                         if let Err(e) = request.as_reader().read_to_string(&mut body) {
@@ -253,6 +277,31 @@ pub fn start_clip_server() {
                             200
                         } else {
                             500
+                        };
+                        let mut response = Response::from_string(result).with_status_code(status);
+                        for h in &cors_headers {
+                            response.add_header(h.clone());
+                        }
+                        let _ = request.respond(response);
+                    }
+                    (&Method::Post, "/files/add") => {
+                        let mut body = String::new();
+                        if let Err(e) = request.as_reader().read_to_string(&mut body) {
+                            let err =
+                                format!(r#"{{"ok":false,"error":"Failed to read body: {}"}}"#, e);
+                            let mut response = Response::from_string(err).with_status_code(400);
+                            for h in &cors_headers {
+                                response.add_header(h.clone());
+                            }
+                            let _ = request.respond(response);
+                            continue;
+                        }
+
+                        let result = handle_file_add(&body);
+                        let status = if result.contains(r#""ok":true"#) {
+                            200
+                        } else {
+                            400
                         };
                         let mut response = Response::from_string(result).with_status_code(status);
                         for h in &cors_headers {
@@ -292,6 +341,83 @@ pub fn start_clip_server() {
     });
 }
 
+fn parse_file_add_paths(body: &str) -> Result<Vec<String>, String> {
+    if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(body) {
+        if let Some(path) = parsed["path"].as_str() {
+            return Ok(vec![path.to_string()]);
+        }
+        if let Some(paths) = parsed["paths"].as_array() {
+            return Ok(paths
+                .iter()
+                .filter_map(|value| value.as_str())
+                .map(ToOwned::to_owned)
+                .collect());
+        }
+        return Err("JSON body must include path or paths".to_string());
+    }
+
+    Ok(body
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty())
+        .map(ToOwned::to_owned)
+        .collect())
+}
+
+fn handle_file_add(body: &str) -> String {
+    let project_path = match CURRENT_PROJECT.lock() {
+        Ok(guard) => guard.clone(),
+        Err(e) => return format!(r#"{{"ok":false,"error":"Lock error: {}"}}"#, e),
+    };
+    let project_path = project_path.replace('\\', "/");
+    if project_path.is_empty() {
+        return r#"{"ok":false,"error":"No active LLM Wiki project. Open a project before adding Finder files."}"#
+            .to_string();
+    }
+
+    let paths = match parse_file_add_paths(body) {
+        Ok(paths) => paths,
+        Err(e) => return serde_json::json!({ "ok": false, "error": e }).to_string(),
+    };
+    let paths: Vec<String> = paths
+        .into_iter()
+        .map(|path| path.replace('\\', "/"))
+        .filter(|path| !path.is_empty())
+        .collect();
+    if paths.is_empty() {
+        return r#"{"ok":false,"error":"No file paths were provided."}"#.to_string();
+    }
+
+    let mut accepted = Vec::new();
+    let mut rejected = Vec::new();
+    for path in paths {
+        match std::fs::metadata(&path) {
+            Ok(meta) if meta.is_file() => accepted.push(path),
+            Ok(_) => rejected.push(serde_json::json!({
+                "path": path,
+                "reason": "Only files can be added from Finder",
+            })),
+            Err(e) => rejected.push(serde_json::json!({
+                "path": path,
+                "reason": format!("File is not readable: {e}"),
+            })),
+        }
+    }
+
+    if let Ok(mut pending) = PENDING_FILE_ADDS.lock() {
+        for path in &accepted {
+            pending.push((project_path.clone(), path.clone()));
+        }
+    }
+
+    serde_json::json!({
+        "ok": !accepted.is_empty(),
+        "accepted": accepted,
+        "rejected": rejected,
+    })
+    .to_string()
+}
+
 fn handle_set_project(body: &str) -> String {
     let parsed: serde_json::Value = match serde_json::from_str(body) {
         Ok(v) => v,
@@ -311,6 +437,23 @@ fn handle_set_project(body: &str) -> String {
             r#"{"ok":true}"#.to_string()
         }
         Err(e) => format!(r#"{{"ok":false,"error":"Lock error: {}"}}"#, e),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_file_add_paths;
+
+    #[test]
+    fn parse_file_add_paths_accepts_newline_body() {
+        let paths = parse_file_add_paths("/tmp/a file.pdf\n\n/tmp/b.md\n").unwrap();
+        assert_eq!(paths, vec!["/tmp/a file.pdf", "/tmp/b.md"]);
+    }
+
+    #[test]
+    fn parse_file_add_paths_accepts_json_paths() {
+        let paths = parse_file_add_paths(r#"{"paths":["/tmp/a.pdf","/tmp/b.md"]}"#).unwrap();
+        assert_eq!(paths, vec!["/tmp/a.pdf", "/tmp/b.md"]);
     }
 }
 
