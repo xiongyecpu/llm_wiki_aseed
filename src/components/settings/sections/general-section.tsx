@@ -1,4 +1,8 @@
+import { useState } from "react"
 import { useTranslation } from "react-i18next"
+import { invoke } from "@tauri-apps/api/core"
+import { MousePointerClick } from "lucide-react"
+import { Button } from "@/components/ui/button"
 import { Label } from "@/components/ui/label"
 import type { CloseBehavior } from "@/stores/wiki-store"
 import type { SettingsDraft, DraftSetter } from "../settings-types"
@@ -28,6 +32,24 @@ const CLOSE_BEHAVIORS: Array<{ value: CloseBehavior; labelKey: string; hintKey: 
 
 export function GeneralSection({ draft, setDraft }: Props) {
   const { t } = useTranslation()
+  const [installing, setInstalling] = useState(false)
+  const [installResult, setInstallResult] = useState<string | null>(null)
+  const [installError, setInstallError] = useState<string | null>(null)
+  const isMac = navigator.userAgent.includes("Mac OS X")
+
+  async function handleInstallFinderAction() {
+    setInstalling(true)
+    setInstallResult(null)
+    setInstallError(null)
+    try {
+      const path = await invoke<string>("install_finder_quick_action")
+      setInstallResult(path)
+    } catch (err) {
+      setInstallError(String(err))
+    } finally {
+      setInstalling(false)
+    }
+  }
 
   return (
     <div className="space-y-6">
@@ -60,6 +82,56 @@ export function GeneralSection({ draft, setDraft }: Props) {
           </p>
         </div>
       </label>
+
+      {isMac && (
+        <div className="space-y-2 rounded-md border p-3">
+          <div className="space-y-1">
+            <Label>
+              {t("settings.sections.general.finderAction", {
+                defaultValue: "Finder Quick Action",
+              })}
+            </Label>
+            <p className="text-xs text-muted-foreground">
+              {t("settings.sections.general.finderActionHint", {
+                defaultValue:
+                  "Install a Finder right-click action that sends selected files to the current LLM Wiki project.",
+              })}
+            </p>
+          </div>
+          <Button
+            type="button"
+            variant="secondary"
+            onClick={handleInstallFinderAction}
+            disabled={installing}
+            className="gap-2"
+          >
+            <MousePointerClick className="h-4 w-4" />
+            {installing
+              ? t("settings.sections.general.installingFinderAction", {
+                  defaultValue: "Installing...",
+                })
+              : t("settings.sections.general.installFinderAction", {
+                  defaultValue: "Install Add to LLM Wiki",
+                })}
+          </Button>
+          {installResult && (
+            <p className="text-xs text-muted-foreground">
+              {t("settings.sections.general.finderActionInstalled", {
+                defaultValue:
+                  "Installed. If Finder does not show it immediately, reopen Finder or log out and back in.",
+              })}
+            </p>
+          )}
+          {installError && (
+            <p className="text-xs text-destructive">
+              {t("settings.sections.general.finderActionFailed", {
+                defaultValue: "Could not install Finder action: {{error}}",
+                error: installError,
+              })}
+            </p>
+          )}
+        </div>
+      )}
 
       <div className="space-y-2">
         <Label>{t("settings.sections.general.closeBehavior", { defaultValue: "When closing the window" })}</Label>

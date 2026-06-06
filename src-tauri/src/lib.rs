@@ -114,6 +114,239 @@ fn set_close_behavior(
     Ok(normalized)
 }
 
+#[tauri::command]
+fn install_finder_quick_action() -> Result<String, String> {
+    run_guarded("install_finder_quick_action", || {
+        #[cfg(not(target_os = "macos"))]
+        {
+            return Err("Finder Quick Action is only available on macOS.".to_string());
+        }
+
+        #[cfg(target_os = "macos")]
+        {
+            use std::fs;
+            use std::os::unix::fs::PermissionsExt;
+            use std::path::PathBuf;
+
+            fn xml_escape(value: &str) -> String {
+                value
+                    .replace('&', "&amp;")
+                    .replace('<', "&lt;")
+                    .replace('>', "&gt;")
+                    .replace('"', "&quot;")
+                    .replace('\'', "&apos;")
+            }
+
+            let home = std::env::var("HOME")
+                .map_err(|_| "Could not resolve HOME for Finder Quick Action install.".to_string())?;
+            let app_support = PathBuf::from(&home)
+                .join("Library")
+                .join("Application Support")
+                .join("LLM Wiki");
+            fs::create_dir_all(&app_support)
+                .map_err(|e| format!("Failed to create helper directory: {e}"))?;
+
+            let helper_path = app_support.join("add-to-llm-wiki.zsh");
+            let helper = r#"#!/bin/zsh
+set -u
+
+endpoint="http://127.0.0.1:19827/files/add"
+
+if [[ "$#" -eq 0 ]]; then
+  /usr/bin/osascript -e 'display notification "No files were selected." with title "LLM Wiki"' >/dev/null 2>&1 || true
+  exit 1
+fi
+
+response=$(
+  for file in "$@"; do
+    printf '%s\n' "$file"
+  done | /usr/bin/curl --silent --show-error --fail \
+    --request POST \
+    --header "Content-Type: text/plain" \
+    --data-binary @- \
+    "$endpoint" 2>&1
+)
+status=$?
+
+if [[ "$status" -ne 0 ]]; then
+  /usr/bin/osascript -e 'display notification "Open LLM Wiki and a project, then try again." with title "LLM Wiki"' >/dev/null 2>&1 || true
+  exit "$status"
+fi
+
+/usr/bin/osascript -e 'display notification "File sent to LLM Wiki." with title "LLM Wiki"' >/dev/null 2>&1 || true
+exit 0
+"#;
+            fs::write(&helper_path, helper)
+                .map_err(|e| format!("Failed to write helper script: {e}"))?;
+            let mut perms = fs::metadata(&helper_path)
+                .map_err(|e| format!("Failed to read helper metadata: {e}"))?
+                .permissions();
+            perms.set_mode(0o755);
+            fs::set_permissions(&helper_path, perms)
+                .map_err(|e| format!("Failed to mark helper executable: {e}"))?;
+
+            let workflow_dir = PathBuf::from(&home)
+                .join("Library")
+                .join("Services")
+                .join("Add to LLM Wiki.workflow")
+                .join("Contents");
+            fs::create_dir_all(&workflow_dir)
+                .map_err(|e| format!("Failed to create Finder workflow directory: {e}"))?;
+
+            let command = format!(
+                "set -u\n\nhelper={}\n\nif [[ ! -x \"$helper\" ]]; then\n  /usr/bin/osascript -e 'display notification \"Open LLM Wiki and reinstall the Finder action.\" with title \"LLM Wiki\"' >/dev/null 2>&1 || true\n  exit 1\nfi\n\n/usr/bin/nohup /bin/zsh \"$helper\" \"$@\" >/tmp/llm-wiki-finder-add.log 2>&1 &\nexit 0",
+                shell_quote(helper_path.to_string_lossy().as_ref()),
+            );
+            let document = finder_workflow_document(&xml_escape(&command));
+            let document_path = workflow_dir.join("document.wflow");
+            fs::write(&document_path, document)
+                .map_err(|e| format!("Failed to write Finder workflow: {e}"))?;
+            let info_plist_path = workflow_dir.join("Info.plist");
+            fs::write(&info_plist_path, finder_workflow_info_plist())
+                .map_err(|e| format!("Failed to write Finder workflow Info.plist: {e}"))?;
+
+            Ok(workflow_dir
+                .parent()
+                .unwrap_or(&workflow_dir)
+                .to_string_lossy()
+                .into_owned())
+        }
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn shell_quote(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+#[cfg(target_os = "macos")]
+fn finder_workflow_document(command_xml: &str) -> String {
+    format!(
+        r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>AMApplicationBuild</key>
+  <string>521</string>
+  <key>AMApplicationVersion</key>
+  <string>2.10</string>
+  <key>AMDocumentVersion</key>
+  <string>2</string>
+  <key>actions</key>
+  <array>
+    <dict>
+      <key>action</key>
+      <dict>
+        <key>ActionBundlePath</key>
+        <string>/System/Library/Automator/Run Shell Script.action</string>
+        <key>ActionName</key>
+        <string>Run Shell Script</string>
+        <key>ActionParameters</key>
+        <dict>
+          <key>CheckedForUserDefaultShell</key>
+          <true/>
+          <key>COMMAND_STRING</key>
+          <string>{command_xml}</string>
+          <key>inputMethod</key>
+          <integer>1</integer>
+          <key>shell</key>
+          <string>/bin/zsh</string>
+        </dict>
+        <key>AMAccepts</key>
+        <dict>
+          <key>Container</key>
+          <string>List</string>
+          <key>Optional</key>
+          <false/>
+          <key>Types</key>
+          <array>
+            <string>com.apple.cocoa.path</string>
+          </array>
+        </dict>
+        <key>AMActionVersion</key>
+        <string>2.0.3</string>
+        <key>AMApplication</key>
+        <array>
+          <string>Automator</string>
+        </array>
+        <key>AMParameterProperties</key>
+        <dict>
+          <key>COMMAND_STRING</key>
+          <dict/>
+          <key>inputMethod</key>
+          <dict/>
+          <key>shell</key>
+          <dict/>
+        </dict>
+        <key>AMProvides</key>
+        <dict>
+          <key>Container</key>
+          <string>List</string>
+          <key>Types</key>
+          <array>
+            <string>com.apple.cocoa.string</string>
+          </array>
+        </dict>
+      </dict>
+      <key>isViewVisible</key>
+      <true/>
+    </dict>
+  </array>
+  <key>connectors</key>
+  <dict/>
+  <key>workflowMetaData</key>
+  <dict>
+    <key>applicationBundleIDsByPath</key>
+    <dict>
+      <key>/System/Library/CoreServices/Finder.app</key>
+      <string>com.apple.finder</string>
+    </dict>
+    <key>serviceInputTypeIdentifier</key>
+    <string>com.apple.Automator.fileSystemObject</string>
+    <key>serviceOutputTypeIdentifier</key>
+    <string>com.apple.Automator.nothing</string>
+    <key>serviceProcessesInput</key>
+    <integer>0</integer>
+    <key>workflowTypeIdentifier</key>
+    <string>com.apple.Automator.servicesMenu</string>
+  </dict>
+</dict>
+</plist>
+"#
+    )
+}
+
+#[cfg(target_os = "macos")]
+fn finder_workflow_info_plist() -> &'static str {
+    r#"<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>CFBundleIdentifier</key>
+  <string>com.llmwiki.finder-service</string>
+  <key>CFBundleName</key>
+  <string>Add to LLM Wiki</string>
+  <key>NSServices</key>
+  <array>
+    <dict>
+      <key>NSMenuItem</key>
+      <dict>
+        <key>default</key>
+        <string>Add to LLM Wiki</string>
+      </dict>
+      <key>NSMessage</key>
+      <string>runWorkflowAsService</string>
+      <key>NSSendFileTypes</key>
+      <array>
+        <string>public.data</string>
+      </array>
+    </dict>
+  </array>
+</dict>
+</plist>
+"#
+}
+
 fn close_behavior<R: tauri::Runtime>(window: &tauri::Window<R>) -> String {
     window
         .state::<CloseBehaviorState>()
@@ -244,6 +477,7 @@ pub fn run() {
             commands::file_sync::ignore_file_change_task,
             set_proxy_env,
             set_close_behavior,
+            install_finder_quick_action,
         ])
         .on_window_event(|window, event| {
             if let tauri::WindowEvent::CloseRequested { api, .. } = event {
