@@ -1,4 +1,4 @@
-import { useMemo } from "react"
+import { useEffect, useMemo, useState } from "react"
 import {
   FileText as FileTextIcon,
   FileSpreadsheet,
@@ -18,11 +18,13 @@ import type { FrontmatterValue } from "@/lib/frontmatter"
 import { getWikiTypeStyle } from "@/lib/wiki-type-style"
 import {
   resolveRelatedSlug,
+  resolveRelatedSlugByTitle,
   resolveSourceName,
   unwrapWikilink,
 } from "@/lib/wiki-page-resolver"
 import { useWikiStore } from "@/stores/wiki-store"
 import { normalizePath } from "@/lib/path-utils"
+import { readFile } from "@/commands/fs"
 
 interface FrontmatterPanelProps {
   data: Record<string, FrontmatterValue>
@@ -52,6 +54,7 @@ export function FrontmatterPanel({ data }: FrontmatterPanelProps) {
   const tags = arrayValue(data.tags)
   const sources = arrayValue(data.sources)
   const related = arrayValue(data.related)
+  const relatedKey = related.join("\u0000")
 
   const extras = useMemo(
     () =>
@@ -67,6 +70,51 @@ export function FrontmatterPanel({ data }: FrontmatterPanelProps) {
   const projectPath = project ? normalizePath(project.path) : null
   const wikiRoot = projectPath ? `${projectPath}/wiki` : null
   const sourcesRoot = projectPath ? `${projectPath}/raw/sources` : null
+
+  const relatedPaths = useMemo(() => {
+    if (!wikiRoot) return {}
+    return Object.fromEntries(
+      related.map((entry) => {
+        const { slug } = unwrapWikilink(entry)
+        return [entry, resolveRelatedSlug(fileTree, slug, wikiRoot)]
+      }),
+    ) as Record<string, string | null>
+  }, [fileTree, relatedKey, wikiRoot])
+  const [titleResolvedRelatedPaths, setTitleResolvedRelatedPaths] = useState<
+    Record<string, string | null>
+  >({})
+
+  useEffect(() => {
+    if (!wikiRoot) {
+      setTitleResolvedRelatedPaths({})
+      return
+    }
+    const root = wikiRoot
+    const unresolved = related.filter((entry) => !relatedPaths[entry])
+    if (unresolved.length === 0) {
+      setTitleResolvedRelatedPaths({})
+      return
+    }
+
+    let cancelled = false
+    async function resolveTitles() {
+      const next: Record<string, string | null> = {}
+      for (const entry of unresolved) {
+        const { slug } = unwrapWikilink(entry)
+        next[entry] = await resolveRelatedSlugByTitle(
+          fileTree,
+          slug,
+          root,
+          readFile,
+        )
+      }
+      if (!cancelled) setTitleResolvedRelatedPaths(next)
+    }
+    void resolveTitles()
+    return () => {
+      cancelled = true
+    }
+  }, [fileTree, relatedKey, relatedPaths, wikiRoot])
 
   const typeStyle = getWikiTypeStyle(type)
   const TypeIcon = typeStyle.icon
@@ -175,10 +223,8 @@ export function FrontmatterPanel({ data }: FrontmatterPanelProps) {
           </div>
           <div className="flex flex-wrap gap-1.5">
             {related.map((entry) => {
-              const { slug, label } = unwrapWikilink(entry)
-              const path = wikiRoot
-                ? resolveRelatedSlug(fileTree, slug, wikiRoot)
-                : null
+              const { label } = unwrapWikilink(entry)
+              const path = relatedPaths[entry] ?? titleResolvedRelatedPaths[entry] ?? null
               return (
                 <RelatedChip
                   key={entry}

@@ -417,6 +417,11 @@ export function parseFileBlocks(text: string): ParseFileBlocksResult {
   return { blocks, warnings }
 }
 
+export function normalizeGeneratedWikiPath(relativePath: string): string {
+  const match = relativePath.match(/^(wiki\/(?:entities|concepts)\/.+)-\d{4}-\d{2}-\d{2}(\.md)$/)
+  return match ? `${match[1]}${match[2]}` : relativePath
+}
+
 /**
  * Build the language rule for ingest prompts.
  * Uses the user's configured output language, falling back to source content detection.
@@ -1195,7 +1200,7 @@ async function writeFileBlocks(
   const targetLang = useWikiStore.getState().outputLanguage
 
   for (const { path: rawRelativePath, content: rawContent } of blocks) {
-    let relativePath = rawRelativePath
+    let relativePath = normalizeGeneratedWikiPath(rawRelativePath)
     if (sourceSummaryPath && relativePath.startsWith("wiki/sources/")) {
       relativePath = sourceSummaryPath
     }
@@ -1513,7 +1518,7 @@ export function buildGenerationPrompt(
     "Other rules:",
     "- Use [[wikilink]] syntax in the BODY for cross-references between pages",
     "- If you include images, use wiki-root-relative paths such as `media/source-slug/image.png`; never output absolute filesystem paths.",
-    "- Use kebab-case filenames",
+    "- Use stable kebab-case filenames for entity and concept pages, with no date suffixes. Example: `wiki/concepts/attention.md`, not `wiki/concepts/attention-2026-06-06.md`.",
     "- Follow the analysis recommendations on what to emphasize",
     "- If the analysis found connections to existing pages, add cross-references",
     "",
@@ -2507,7 +2512,7 @@ export async function executeIngestWrites(
   const matches = accumulated.matchAll(FILE_BLOCK_REGEX)
 
   for (const match of matches) {
-    let relativePath = match[1].trim()
+    let relativePath = normalizeGeneratedWikiPath(match[1].trim())
     let content = match[2]
 
     if (!relativePath) continue

@@ -32,6 +32,175 @@ export const lintScenarios: LintScenario[] = [
     },
   },
 
+  {
+    name: "structural/title-style-wikilinks",
+    description:
+      "Title-style wikilinks with spaces, punctuation, and case differences " +
+      "resolve to existing kebab-case filenames instead of being reported as broken.",
+    initialWiki: {
+      "wiki/index.md": "# Index\n\n- [[Zwift Ride]]\n- [[Zwift Click]]\n- [[ANT+ FE-C协议]]\n",
+      "wiki/zwift-ride.md": page(
+        "Zwift Ride",
+        "Pairs with [[Zwift Click]] and uses [[ANT+ FE-C协议]].",
+      ),
+      "wiki/zwift-click.md": page(
+        "Zwift Click",
+        "Controls [[Zwift Ride]] through the ecosystem.",
+      ),
+      "wiki/ant-fe-c协议.md": page(
+        "ANT+ FE-C协议",
+        "Interactive trainer control protocol used by [[Zwift Ride]].",
+      ),
+    },
+    expected: {
+      structural: [],
+    },
+  },
+
+  {
+    name: "structural/dated-entity-concept-link",
+    description:
+      "Legacy entity/concept wikilinks that include generated date suffixes " +
+      "resolve to the stable undated page when that page exists.",
+    initialWiki: {
+      "wiki/index.md": "# Index\n\n- [[concepts/遗产产品]]\n- [[concepts/定价悖论]]\n",
+      "wiki/concepts/遗产产品.md": page(
+        "遗产产品",
+        "Legacy products shape [[concepts/定价悖论-2026-06-05-232551]].",
+      ),
+      "wiki/concepts/定价悖论.md": page(
+        "定价悖论",
+        "Related to [[concepts/遗产产品-2026-06-05-232551]].",
+      ),
+    },
+    expected: {
+      structural: [],
+    },
+  },
+
+  {
+    name: "structural/related-frontmatter-counts-as-outlink",
+    description:
+      "Pages whose relationships are stored in frontmatter related[] have outgoing links " +
+      "even when their body contains no explicit wikilinks.",
+    initialWiki: {
+      "wiki/index.md": "# Index\n\n- [[department]]\n- [[strategy]]\n",
+      "wiki/department.md": [
+        "---",
+        "title: Department",
+        "related: [strategy]",
+        "---",
+        "",
+        "# Department",
+        "",
+        "This page has prose but no body wikilinks.",
+        "",
+      ].join("\n"),
+      "wiki/strategy.md": page("Strategy", "Connected back to [[department]]."),
+    },
+    expected: {
+      structural: [],
+    },
+  },
+
+  {
+    name: "structural/related-frontmatter-does-not-create-broken-link",
+    description:
+      "A missing related[] target should not be reported as a prose broken-link; " +
+      "related[] is used for connectivity while body wikilinks remain the broken-link surface.",
+    initialWiki: {
+      "wiki/index.md": "# Index\n\n- [[profile]]\n- [[hub]]\n",
+      "wiki/profile.md": [
+        "---",
+        "title: Profile",
+        "related: [hub, missing-team]",
+        "---",
+        "",
+        "# Profile",
+        "",
+        "This profile has no body wikilinks, but it has a related entry.",
+        "",
+      ].join("\n"),
+      "wiki/hub.md": page("Hub", "Connected to [[profile]]."),
+    },
+    expected: {
+      structural: [],
+    },
+  },
+
+  {
+    name: "structural/separator-variant-wikilinks",
+    description:
+      "Historical mixed CJK/Latin slug variants with extra separators resolve to the same page.",
+    initialWiki: {
+      "wiki/index.md": "# Index\n\n- [[ai智能体智能副将domestique]]\n- [[deepseek]]\n",
+      "wiki/ai智能体智能副将domestique.md": page(
+        "AI智能体智能副将Domestique",
+        "Uses [[deepseek]] as a model.",
+      ),
+      "wiki/deepseek.md": page(
+        "DeepSeek",
+        "Supports [[ai智能体-智能副将-domestique]].",
+      ),
+    },
+    expected: {
+      structural: [],
+    },
+  },
+
+  {
+    name: "structural/source-and-query-not-orphans",
+    description:
+      "Source summaries and query pages are support artifacts; orphan lint should focus on knowledge pages.",
+    initialWiki: {
+      "wiki/index.md": "# Index\n\n- [[attention]]\n",
+      "wiki/attention.md": page(
+        "Attention",
+        "Related to [[transformer]].",
+      ),
+      "wiki/transformer.md": page("Transformer", "Built on [[attention]]."),
+      "wiki/sources/source-summary.md": page(
+        "Source Summary",
+        "This source summary has no inbound links from content pages.",
+      ),
+      "wiki/queries/research-question.md": page(
+        "Research Question",
+        "This query page has no inbound links from content pages.",
+      ),
+    },
+    expected: {
+      structural: [],
+    },
+  },
+
+  {
+    name: "structural/frontmatter-title-resolves-wikilink",
+    description:
+      "A wikilink may target a human-readable page title while the file uses an encoded or generated slug.",
+    initialWiki: {
+      "wiki/index.md": "# Index\n\n- [[concept]]\n",
+      "wiki/sources/4-lark--encoded-title.md": [
+        "---",
+        "type: source",
+        "title: 顽鹿 BU AI 原生组织架构方案 v2.2",
+        "related: [concept]",
+        "---",
+        "",
+        "# 顽鹿 BU AI 原生组织架构方案 v2.2",
+        "",
+        "Source summary.",
+        "",
+      ].join("\n"),
+      "wiki/concept.md": page(
+        "Concept",
+        "This concept came from [[顽鹿BU AI原生组织架构方案v2.2]].",
+      ),
+    },
+    expected: {
+      structural: [],
+    },
+  },
+
   // 2. orphan-page — no inbound wikilinks
   {
     name: "structural/orphan-page",

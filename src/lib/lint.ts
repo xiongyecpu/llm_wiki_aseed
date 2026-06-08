@@ -5,6 +5,7 @@ import type { FileNode } from "@/types/wiki"
 import { useActivityStore } from "@/stores/activity-store"
 import { getFileName, getRelativePath, normalizePath } from "@/lib/path-utils"
 import { buildLanguageDirective } from "@/lib/output-language"
+import { parseFrontmatterArray } from "@/lib/sources-merge"
 
 export interface LintResult {
   type: "orphan" | "broken-link" | "no-outlinks" | "semantic"
@@ -38,9 +39,71 @@ function extractWikilinks(content: string): string[] {
   return links
 }
 
+function extractOutlinks(content: string): string[] {
+  const links = extractWikilinks(content)
+  const related = parseFrontmatterArray(content, "related")
+  return [...new Set([...links, ...related].map((link) => link.trim()).filter(Boolean))]
+}
+
+function extractFrontmatterTitle(content: string): string | null {
+  const match = content.match(/^title:\s*["']?(.+?)["']?\s*$/m)
+  return match?.[1]?.trim() || null
+}
+
 function relativeToSlug(relativePath: string): string {
   // relativePath relative to wiki/ dir, e.g. "entities/foo-bar" or "queries/my-page-2024-01-01"
   return relativePath.replace(/\.md$/, "")
+}
+
+function shouldCheckConnectivity(relativePath: string): boolean {
+  return !relativePath.startsWith("sources/") && !relativePath.startsWith("queries/")
+}
+
+export function normalizeWikiLookupKey(value: string): string {
+  const withoutExt = value
+    .normalize("NFKC")
+    .replace(/\.md$/i, "")
+    .trim()
+  const basename = getFileName(withoutExt)
+  return basename
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-")
+    .replace(/[：:()（）[\]"'“”‘’.,，。/\\+]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+}
+
+function stripGeneratedDateSuffix(value: string): string {
+  return value.replace(/-\d{4}-\d{2}-\d{2}(?:-\d{6})?$/i, "")
+}
+
+function wikiLookupKeys(value: string): string[] {
+  const withoutExt = value.replace(/\.md$/i, "")
+  const basename = getFileName(withoutExt)
+  const normalized = normalizeWikiLookupKey(withoutExt)
+  const normalizedBase = normalizeWikiLookupKey(basename)
+  const undatedBase = stripGeneratedDateSuffix(basename)
+  const normalizedUndatedBase = normalizeWikiLookupKey(undatedBase)
+  const keys = [
+    withoutExt.toLowerCase(),
+    basename.toLowerCase(),
+    normalized,
+    normalized.replace(/-/g, ""),
+    normalizedBase.replace(/-/g, ""),
+  ]
+
+  if (/^(?:wiki\/)?(?:entities|concepts)\//i.test(withoutExt)) {
+    const undated = stripGeneratedDateSuffix(withoutExt)
+    const normalizedUndated = normalizeWikiLookupKey(undated)
+    keys.push(undated.toLowerCase())
+    keys.push(normalizedUndated)
+    keys.push(normalizedUndated.replace(/-/g, ""))
+  }
+  keys.push(undatedBase.toLowerCase())
+  keys.push(normalizedUndatedBase)
+  keys.push(normalizedUndatedBase.replace(/-/g, ""))
+
+  return [...new Set(keys.filter((key) => key.length > 0))]
 }
 
 /**
@@ -52,16 +115,37 @@ function relativeToSlug(relativePath: string): string {
 function buildSlugMap(
   wikiFiles: FileNode[],
   wikiRoot: string,
+  pageTitles: Map<string, string>,
 ): Map<string, string> {
   const map = new Map<string, string>()
   for (const f of wikiFiles) {
     // e.g. /path/to/project/wiki/entities/foo.md → entities/foo
     const rel = getRelativePath(f.path, wikiRoot).replace(/\.md$/, "")
-    map.set(rel.toLowerCase(), f.path)
-    // also index by basename without extension
-    map.set(f.name.replace(/\.md$/, "").toLowerCase(), f.path)
+    for (const key of wikiLookupKeys(rel)) {
+      if (!map.has(key)) map.set(key, f.path)
+    }
+    const title = pageTitles.get(f.path)
+    if (title) {
+      for (const key of wikiLookupKeys(title)) {
+        if (!map.has(key)) map.set(key, f.path)
+      }
+    }
   }
   return map
+}
+
+function resolveWikilinkTarget(
+  slugMap: Map<string, string>,
+  wikiRoot: string,
+  link: string,
+): string | null {
+  for (const key of wikiLookupKeys(link)) {
+    const target = slugMap.get(key)
+    if (target) {
+      return relativeToSlug(getRelativePath(target, wikiRoot)).toLowerCase()
+    }
+  }
+  return null
 }
 
 // ── Structural lint ───────────────────────────────────────────────────────────
@@ -81,32 +165,39 @@ export async function runStructuralLint(projectPath: string): Promise<LintResult
     (f) => f.name !== "index.md" && f.name !== "log.md"
   )
 
-  const slugMap = buildSlugMap(contentFiles, wikiRoot)
-
   // Read all content files
-  type PageData = { path: string; slug: string; content: string; outlinks: string[] }
+  type PageData = {
+    path: string
+    slug: string
+    content: string
+    outlinks: string[]
+    bodyLinks: string[]
+  }
   const pages: PageData[] = []
+  const pageTitles = new Map<string, string>()
 
   for (const f of contentFiles) {
     try {
       const content = await readFile(f.path)
       const slug = relativeToSlug(getRelativePath(f.path, wikiRoot))
-      const outlinks = extractWikilinks(content)
-      pages.push({ path: f.path, slug, content, outlinks })
+      const title = extractFrontmatterTitle(content)
+      if (title) pageTitles.set(f.path, title)
+      const bodyLinks = extractWikilinks(content)
+      const outlinks = extractOutlinks(content)
+      pages.push({ path: f.path, slug, content, outlinks, bodyLinks })
     } catch {
       // skip unreadable files
     }
   }
+
+  const slugMap = buildSlugMap(contentFiles, wikiRoot, pageTitles)
 
   // Build inbound link count. Lookups are case-insensitive — [[Transformer]]
   // should match transformer.md (slug "transformer").
   const inboundCounts = new Map<string, number>()
   for (const p of pages) {
     for (const link of p.outlinks) {
-      const lookup = link.toLowerCase()
-      const target = slugMap.has(lookup)
-        ? relativeToSlug(getRelativePath(slugMap.get(lookup)!, wikiRoot)).toLowerCase()
-        : lookup
+      const target = resolveWikilinkTarget(slugMap, wikiRoot, link) ?? link.toLowerCase()
       inboundCounts.set(target, (inboundCounts.get(target) ?? 0) + 1)
     }
   }
@@ -118,7 +209,7 @@ export async function runStructuralLint(projectPath: string): Promise<LintResult
 
     // Orphan: no inbound links (lowercased slug for case-insensitive match)
     const inbound = inboundCounts.get(p.slug.toLowerCase()) ?? 0
-    if (inbound === 0) {
+    if (shouldCheckConnectivity(shortName) && inbound === 0) {
       results.push({
         type: "orphan",
         severity: "info",
@@ -128,7 +219,7 @@ export async function runStructuralLint(projectPath: string): Promise<LintResult
     }
 
     // No outbound links
-    if (p.outlinks.length === 0) {
+    if (shouldCheckConnectivity(shortName) && p.outlinks.length === 0) {
       results.push({
         type: "no-outlinks",
         severity: "info",
@@ -137,11 +228,12 @@ export async function runStructuralLint(projectPath: string): Promise<LintResult
       })
     }
 
-    // Broken links — case-insensitive matching.
-    for (const link of p.outlinks) {
-      const lookup = link.toLowerCase()
-      const basename = getFileName(link).replace(/\.md$/, "").toLowerCase()
-      const exists = slugMap.has(lookup) || slugMap.has(basename)
+    // Broken links — case-insensitive matching. Only body wikilinks
+    // are reported here; frontmatter `related:` contributes graph
+    // connectivity but is surfaced in the frontmatter UI instead of
+    // as a prose broken-link warning.
+    for (const link of p.bodyLinks) {
+      const exists = resolveWikilinkTarget(slugMap, wikiRoot, link) !== null
       if (!exists) {
         results.push({
           type: "broken-link",

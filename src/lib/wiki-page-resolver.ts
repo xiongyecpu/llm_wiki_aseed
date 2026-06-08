@@ -1,4 +1,5 @@
 import type { FileNode } from "@/types/wiki"
+import { parseFrontmatter } from "@/lib/frontmatter"
 
 /**
  * Strip Obsidian-style `[[target]]` or `[[target|alias]]` wrapping
@@ -54,6 +55,97 @@ export function findInTreeByName(
   return walk(tree)
 }
 
+export function normalizeWikiPageLookupKey(value: string): string {
+  const withoutExt = value
+    .normalize("NFKC")
+    .replace(/\.md$/i, "")
+    .trim()
+  const base = withoutExt.split(/[\\/]/).pop() ?? withoutExt
+  return base
+    .toLowerCase()
+    .replace(/[\s_]+/g, "-")
+    .replace(/[：:()（）[\]"'“”‘’.,，。/\\+]+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^-|-$/g, "")
+}
+
+function stripGeneratedDateSuffix(value: string): string {
+  return value.replace(/-\d{4}-\d{2}-\d{2}(?:-\d{6})?$/i, "")
+}
+
+function relatedLookupKeys(ref: string): string[] {
+  const withoutExt = ref.replace(/\.md$/i, "")
+  const base = withoutExt.split(/[\\/]/).pop() ?? withoutExt
+  const normalized = normalizeWikiPageLookupKey(withoutExt)
+  const normalizedBase = normalizeWikiPageLookupKey(base)
+  const undatedBase = stripGeneratedDateSuffix(base)
+  const normalizedUndatedBase = normalizeWikiPageLookupKey(undatedBase)
+  const keys = [
+    withoutExt.toLowerCase(),
+    base.toLowerCase(),
+    normalized,
+    normalized.replace(/-/g, ""),
+    normalizedBase.replace(/-/g, ""),
+    undatedBase.toLowerCase(),
+    normalizedUndatedBase,
+    normalizedUndatedBase.replace(/-/g, ""),
+  ]
+  if (/^(?:wiki\/)?(?:entities|concepts)\//i.test(withoutExt)) {
+    const undated = stripGeneratedDateSuffix(withoutExt)
+    const normalizedUndated = normalizeWikiPageLookupKey(undated)
+    keys.push(undated.toLowerCase())
+    keys.push(normalizedUndated)
+    keys.push(normalizedUndated.replace(/-/g, ""))
+  }
+  return [...new Set(keys.filter((key) => key.length > 0))]
+}
+
+function findInTreeByRelatedLookupKey(
+  tree: FileNode[],
+  ref: string,
+  pathContains: string,
+): string | null {
+  const targets = new Set(relatedLookupKeys(ref))
+  function walk(nodes: FileNode[]): string | null {
+    for (const node of nodes) {
+      if (node.is_dir) {
+        if (node.children) {
+          const r = walk(node.children)
+          if (r) return r
+        }
+        continue
+      }
+      const filenameKey = normalizeWikiPageLookupKey(node.name)
+      const pathKey = normalizeWikiPageLookupKey(node.path)
+      if (
+        node.path.includes(pathContains) &&
+        (targets.has(filenameKey) || targets.has(pathKey))
+      ) {
+        return node.path
+      }
+    }
+    return null
+  }
+  return walk(tree)
+}
+
+function collectMarkdownFiles(tree: FileNode[], pathContains: string): string[] {
+  const paths: string[] = []
+  function walk(nodes: FileNode[]) {
+    for (const node of nodes) {
+      if (node.is_dir) {
+        if (node.children) walk(node.children)
+        continue
+      }
+      if (node.path.includes(pathContains) && node.name.toLowerCase().endsWith(".md")) {
+        paths.push(node.path)
+      }
+    }
+  }
+  walk(tree)
+  return paths
+}
+
 /**
  * Resolve a `related:` reference to an absolute wiki page path.
  * Accepts three shapes the wiki has historically written:
@@ -75,11 +167,44 @@ export function resolveRelatedSlug(
     const projectRoot = wikiRoot.replace(/\/wiki$/, "")
     const target = `${projectRoot}/${ref}`
     const found = findInTreeByPath(tree, target)
-    return found && found.includes(`${wikiRoot}/`) ? found : null
+    if (found && found.includes(`${wikiRoot}/`)) return found
+    return findInTreeByRelatedLookupKey(tree, ref, `${wikiRoot}/`)
   }
 
   const filename = ref.endsWith(".md") ? ref : `${ref}.md`
-  return findInTreeByName(tree, filename, `${wikiRoot}/`)
+  return (
+    findInTreeByName(tree, filename, `${wikiRoot}/`) ??
+    findInTreeByRelatedLookupKey(tree, ref, `${wikiRoot}/`)
+  )
+}
+
+/**
+ * Fallback for links written as human titles while the real page has
+ * a generated or encoded filename, especially source-summary pages in
+ * `wiki/sources/`. The file tree only exposes names/paths, so callers
+ * provide a reader for the rare cases where filename lookup failed.
+ */
+export async function resolveRelatedSlugByTitle(
+  tree: FileNode[],
+  ref: string,
+  wikiRoot: string,
+  read: (path: string) => Promise<string>,
+): Promise<string | null> {
+  const targets = new Set(relatedLookupKeys(ref))
+  for (const path of collectMarkdownFiles(tree, `${wikiRoot}/`)) {
+    let content: string
+    try {
+      content = await read(path)
+    } catch {
+      continue
+    }
+    const title = parseFrontmatter(content).frontmatter?.title
+    if (typeof title !== "string") continue
+    if (relatedLookupKeys(title).some((key) => targets.has(key))) {
+      return path
+    }
+  }
+  return null
 }
 
 /**

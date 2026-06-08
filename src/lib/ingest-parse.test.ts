@@ -18,7 +18,7 @@
  * to dropping pages without telling anyone.
  */
 import { describe, it, expect } from "vitest"
-import { parseFileBlocks, isSafeIngestPath } from "./ingest"
+import { parseFileBlocks, isSafeIngestPath, normalizeGeneratedWikiPath } from "./ingest"
 
 // ── Happy paths ─────────────────────────────────────────────────────
 
@@ -78,6 +78,26 @@ describe("parseFileBlocks — canonical shapes", () => {
       "---END FILE---",
     ].join("\n")
     expect(parseFileBlocks(text).blocks).toHaveLength(1)
+  })
+})
+
+describe("normalizeGeneratedWikiPath", () => {
+  it("strips accidental date suffixes from entity and concept filenames", () => {
+    expect(normalizeGeneratedWikiPath("wiki/entities/qwen-2026-06-06.md")).toBe(
+      "wiki/entities/qwen.md",
+    )
+    expect(normalizeGeneratedWikiPath("wiki/concepts/attention-2026-06-06.md")).toBe(
+      "wiki/concepts/attention.md",
+    )
+  })
+
+  it("leaves sources and queries untouched", () => {
+    expect(normalizeGeneratedWikiPath("wiki/sources/qwen-2026-06-06.md")).toBe(
+      "wiki/sources/qwen-2026-06-06.md",
+    )
+    expect(normalizeGeneratedWikiPath("wiki/queries/qwen-2026-06-06.md")).toBe(
+      "wiki/queries/qwen-2026-06-06.md",
+    )
   })
 })
 
