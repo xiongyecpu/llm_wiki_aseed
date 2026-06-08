@@ -5,13 +5,17 @@ import remarkMath from "remark-math"
 import rehypeKatex from "rehype-katex"
 import "katex/dist/katex.min.css"
 import { transformWikilinks } from "@/lib/wikilink-transform"
-import { resolveRelatedSlug } from "@/lib/wiki-page-resolver"
+import {
+  resolveRelatedSlug,
+  resolveRelatedSlugByTitle,
+} from "@/lib/wiki-page-resolver"
 import { resolveMarkdownImageSrc } from "@/lib/markdown-image-resolver"
 import { normalizePath } from "@/lib/path-utils"
 import { detectLanguage } from "@/lib/detect-language"
 import { getHtmlLang, getTextDirection } from "@/lib/language-metadata"
 import { useWikiStore } from "@/stores/wiki-store"
 import { MermaidDiagram, unwrapMermaidPre } from "@/components/mermaid-diagram"
+import { readFile } from "@/commands/fs"
 
 interface WikiReaderProps {
   body: string
@@ -41,7 +45,10 @@ export function WikiReader({ body }: WikiReaderProps) {
   const projectPath = project ? normalizePath(project.path) : null
   const wikiRoot = projectPath ? `${projectPath}/wiki` : null
 
-  function handleAnchorClick(e: React.MouseEvent<HTMLAnchorElement>, href: string) {
+  async function handleAnchorClick(
+    e: React.MouseEvent<HTMLAnchorElement>,
+    href: string,
+  ) {
     if (!href.startsWith("#")) return
     e.preventDefault()
     if (!wikiRoot) return
@@ -52,7 +59,9 @@ export function WikiReader({ body }: WikiReaderProps) {
         return href.slice(1)
       }
     })()
-    const path = resolveRelatedSlug(fileTree, slug, wikiRoot)
+    const path =
+      resolveRelatedSlug(fileTree, slug, wikiRoot) ??
+      (await resolveRelatedSlugByTitle(fileTree, slug, wikiRoot, readFile))
     if (path) setSelectedFile(path)
   }
 

@@ -3,6 +3,7 @@ import type { FileNode } from "@/types/wiki"
 import {
   findInTreeByName,
   resolveRelatedSlug,
+  resolveRelatedSlugByTitle,
   resolveSourceName,
   unwrapWikilink,
 } from "./wiki-page-resolver"
@@ -23,9 +24,17 @@ function dir(path: string, children: FileNode[]): FileNode {
 const TREE: FileNode[] = [
   dir(`${PP}/wiki`, [
     dir(`${WIKI}/entities`, [file(`${WIKI}/entities/foo.md`)]),
-    dir(`${WIKI}/concepts`, [file(`${WIKI}/concepts/bar.md`)]),
+    dir(`${WIKI}/concepts`, [
+      file(`${WIKI}/concepts/bar.md`),
+      file(`${WIKI}/concepts/zwift-ride.md`),
+      file(`${WIKI}/concepts/遗产产品.md`),
+      file(`${WIKI}/concepts/ai智能体智能副将domestique.md`),
+    ]),
     dir(`${WIKI}/queries`, [file(`${WIKI}/queries/what-is-foo.md`)]),
-    dir(`${WIKI}/sources`, [file(`${WIKI}/sources/paper.md`)]),
+    dir(`${WIKI}/sources`, [
+      file(`${WIKI}/sources/paper.md`),
+      file(`${WIKI}/sources/4-lark--102-bu-ai-v2--571phr.md`),
+    ]),
   ]),
   dir(`${PP}/raw`, [
     dir(`${SOURCES}`, [
@@ -130,12 +139,47 @@ describe("resolveRelatedSlug", () => {
     )
   })
 
+  it("resolves title-style wikilinks to kebab-case filenames", () => {
+    expect(resolveRelatedSlug(TREE, "Zwift Ride", WIKI)).toBe(
+      `${WIKI}/concepts/zwift-ride.md`,
+    )
+  })
+
+  it("resolves legacy dated entity/concept paths to the stable page", () => {
+    expect(resolveRelatedSlug(TREE, "wiki/concepts/遗产产品-2026-06-05-232551", WIKI)).toBe(
+      `${WIKI}/concepts/遗产产品.md`,
+    )
+  })
+
+  it("resolves separator variants for mixed CJK and Latin slugs", () => {
+    expect(resolveRelatedSlug(TREE, "ai智能体-智能副将-domestique", WIKI)).toBe(
+      `${WIKI}/concepts/ai智能体智能副将domestique.md`,
+    )
+  })
+
   it("returns null when slug doesn't exist", () => {
     expect(resolveRelatedSlug(TREE, "ghost", WIKI)).toBeNull()
   })
 
   it("returns null when path-like ref doesn't exist", () => {
     expect(resolveRelatedSlug(TREE, "wiki/entities/ghost.md", WIKI)).toBeNull()
+  })
+
+  it("resolves human titles to generated source-summary filenames", async () => {
+    const sourcePath = `${WIKI}/sources/4-lark--102-bu-ai-v2--571phr.md`
+    const read = async (path: string) =>
+      path === sourcePath
+        ? "---\ntitle: 顽鹿 BU AI 原生组织架构方案 v2.2\n---\n\n# Summary\n"
+        : "---\ntitle: Other\n---\n"
+
+    await expect(
+      resolveRelatedSlugByTitle(
+        TREE,
+        "顽鹿BU AI原生组织架构方案v2.2",
+        WIKI,
+        read,
+      ),
+    ).resolves.toBe(sourcePath)
   })
 
   it("never returns a path under raw/sources, even if a matching .md exists there", () => {

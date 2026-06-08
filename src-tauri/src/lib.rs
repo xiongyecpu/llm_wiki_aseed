@@ -137,8 +137,9 @@ fn install_finder_quick_action() -> Result<String, String> {
                     .replace('\'', "&apos;")
             }
 
-            let home = std::env::var("HOME")
-                .map_err(|_| "Could not resolve HOME for Finder Quick Action install.".to_string())?;
+            let home = std::env::var("HOME").map_err(|_| {
+                "Could not resolve HOME for Finder Quick Action install.".to_string()
+            })?;
             let app_support = PathBuf::from(&home)
                 .join("Library")
                 .join("Application Support")
@@ -475,6 +476,8 @@ pub fn run() {
             commands::file_sync::get_file_change_queue,
             commands::file_sync::retry_file_change_task,
             commands::file_sync::ignore_file_change_task,
+            commands::lark_doc::import_lark_doc,
+            commands::lark_doc::search_lark_docs,
             set_proxy_env,
             set_close_behavior,
             install_finder_quick_action,

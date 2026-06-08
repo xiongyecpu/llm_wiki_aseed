@@ -2,10 +2,18 @@ import { useState, useEffect, useCallback, useMemo, useRef } from "react"
 import { open } from "@tauri-apps/plugin-dialog"
 import { Plus, FileText, RefreshCw, BookOpen, Trash2, Folder, ChevronRight, ChevronDown } from "lucide-react"
 import { Button } from "@/components/ui/button"
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog"
+import { Input } from "@/components/ui/input"
 import { ScrollArea } from "@/components/ui/scroll-area"
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip"
 import { useWikiStore } from "@/stores/wiki-store"
-import { listDirectory, readFile } from "@/commands/fs"
+import { listDirectory, readFile, searchLarkDocs, type LarkDocSearchResult } from "@/commands/fs"
 import type { FileNode } from "@/types/wiki"
 import { useTranslation } from "react-i18next"
 import { normalizePath } from "@/lib/path-utils"
@@ -15,6 +23,8 @@ import {
   deleteSourceFile,
   deleteSourceFolder,
   enqueueSourceIngest,
+  importLarkDocSources,
+  importLarkDocSource,
   importSourceFiles,
   importSourceFolder,
 } from "@/lib/source-lifecycle"
@@ -34,6 +44,14 @@ export function SourcesView() {
   const dataVersion = useWikiStore((s) => s.dataVersion)
   const [sources, setSources] = useState<FileNode[]>([])
   const [importing, setImporting] = useState(false)
+  const [larkDialogOpen, setLarkDialogOpen] = useState(false)
+  const [larkDoc, setLarkDoc] = useState("")
+  const [larkSearchQuery, setLarkSearchQuery] = useState("")
+  const [larkSearchResults, setLarkSearchResults] = useState<LarkDocSearchResult[]>([])
+  const [selectedLarkDocs, setSelectedLarkDocs] = useState<Set<string>>(new Set())
+  const [larkSearching, setLarkSearching] = useState(false)
+  const [larkImporting, setLarkImporting] = useState(false)
+  const [larkError, setLarkError] = useState<string | null>(null)
   const [ingestingPath, setIngestingPath] = useState<string | null>(null)
   const [refreshing, setRefreshing] = useState(false)
   const [refreshError, setRefreshError] = useState<string | null>(null)
@@ -166,6 +184,78 @@ export function SourcesView() {
     }
   }
 
+  async function handleImportLarkDoc() {
+    if (!project || larkImporting) return
+    const doc = larkDoc.trim()
+    if (!doc) {
+      setLarkError(t("sources.larkDocRequired", { defaultValue: "Enter a Lark document URL or token." }))
+      return
+    }
+
+    setLarkImporting(true)
+    setLarkError(null)
+    try {
+      await importLarkDocSource(project, doc, llmConfig)
+      setLarkDoc("")
+      setLarkDialogOpen(false)
+      await loadSources()
+      const tree = await listDirectory(project.path)
+      setFileTree(tree)
+    } catch (err) {
+      setLarkError(String(err))
+    } finally {
+      setLarkImporting(false)
+    }
+  }
+
+  async function handleSearchLarkDocs() {
+    const query = larkSearchQuery.trim()
+    if (!query || larkSearching) return
+    setLarkSearching(true)
+    setLarkError(null)
+    setSelectedLarkDocs(new Set())
+    try {
+      setLarkSearchResults(await searchLarkDocs(query))
+    } catch (err) {
+      setLarkError(String(err))
+      setLarkSearchResults([])
+    } finally {
+      setLarkSearching(false)
+    }
+  }
+
+  async function handleImportSelectedLarkDocs() {
+    if (!project || larkImporting || selectedLarkDocs.size === 0) return
+    const docs = larkSearchResults
+      .filter((result) => selectedLarkDocs.has(result.id))
+      .map((result) => result.url)
+    if (docs.length === 0) return
+
+    setLarkImporting(true)
+    setLarkError(null)
+    try {
+      await importLarkDocSources(project, docs, llmConfig)
+      setSelectedLarkDocs(new Set())
+      setLarkDialogOpen(false)
+      await loadSources()
+      const tree = await listDirectory(project.path)
+      setFileTree(tree)
+    } catch (err) {
+      setLarkError(String(err))
+    } finally {
+      setLarkImporting(false)
+    }
+  }
+
+  function toggleLarkDoc(id: string, checked: boolean) {
+    setSelectedLarkDocs((prev) => {
+      const next = new Set(prev)
+      if (checked) next.add(id)
+      else next.delete(id)
+      return next
+    })
+  }
+
   async function handleOpenSource(node: FileNode) {
     setSelectedFile(node.path)
     try {
@@ -285,6 +375,18 @@ export function SourcesView() {
             <Plus className="mr-1 h-4 w-4" />
             {importing ? t("sources.importing") : t("sources.import")}
           </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              setLarkError(null)
+              setLarkDialogOpen(true)
+            }}
+            disabled={larkImporting}
+          >
+            <BookOpen className="mr-1 h-4 w-4" />
+            {t("sources.importLarkDoc", { defaultValue: "Lark Doc" })}
+          </Button>
           <Button size="sm" onClick={handleImportFolder} disabled={importing}>
             <Plus className="mr-1 h-4 w-4" />
             {t("sources.importFolder", "Folder")}
@@ -313,6 +415,17 @@ export function SourcesView() {
               <Button variant="outline" size="sm" onClick={handleImportFolder}>
                 <Plus className="mr-1 h-4 w-4" />
                 {t("sources.importFolder")}
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setLarkError(null)
+                  setLarkDialogOpen(true)
+                }}
+              >
+                <BookOpen className="mr-1 h-4 w-4" />
+                {t("sources.importLarkDoc", { defaultValue: "Lark Doc" })}
               </Button>
             </div>
           </div>
@@ -355,6 +468,128 @@ export function SourcesView() {
         </Tooltip>
       </div>
       </div>
+      <Dialog open={larkDialogOpen} onOpenChange={setLarkDialogOpen}>
+        <DialogContent
+          className="max-h-[min(760px,calc(100vh-2rem))] min-h-0 grid-rows-none flex-col gap-0 overflow-hidden p-0 sm:max-w-2xl"
+          style={{ display: "flex" }}
+        >
+          <DialogHeader>
+            <DialogTitle className="px-4 pt-4">
+              {t("sources.importLarkDocTitle", { defaultValue: "Import Lark Document" })}
+            </DialogTitle>
+          </DialogHeader>
+          <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-4 py-4">
+            <div className="space-y-2">
+              <div className="flex gap-2">
+                <Input
+                  className="min-w-0 flex-1"
+                  value={larkSearchQuery}
+                  onChange={(e) => setLarkSearchQuery(e.target.value)}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      e.preventDefault()
+                      void handleSearchLarkDocs()
+                    }
+                  }}
+                  placeholder={t("sources.larkSearchPlaceholder", {
+                    defaultValue: "Search Lark documents",
+                  })}
+                  disabled={larkSearching || larkImporting}
+                />
+                <Button
+                  type="button"
+                  variant="secondary"
+                  className="shrink-0"
+                  onClick={handleSearchLarkDocs}
+                  disabled={larkSearching || larkImporting || !larkSearchQuery.trim()}
+                >
+                  {larkSearching
+                    ? t("sources.searchingLarkDocs", { defaultValue: "Searching..." })
+                    : t("sources.searchLarkDocs", { defaultValue: "Search" })}
+                </Button>
+              </div>
+              {larkSearchResults.length > 0 && (
+                <div className="max-h-64 overflow-y-auto rounded-md border">
+                  {larkSearchResults.map((result) => (
+                    <label
+                      key={result.id}
+                      className="flex cursor-pointer gap-3 border-b px-3 py-2 last:border-b-0 hover:bg-muted/50"
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-1 h-4 w-4 shrink-0"
+                        checked={selectedLarkDocs.has(result.id)}
+                        onChange={(e) => toggleLarkDoc(result.id, e.target.checked)}
+                        disabled={larkImporting}
+                      />
+                      <span className="min-w-0 flex-1 space-y-1">
+                        <span className="block truncate text-sm font-medium">{result.title}</span>
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {[result.docType, result.owner, result.updatedAt].filter(Boolean).join(" · ")}
+                        </span>
+                        {result.summary && (
+                          <span className="line-clamp-2 block text-xs text-muted-foreground">
+                            {result.summary}
+                          </span>
+                        )}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            <div className="space-y-2">
+              <Input
+                className="w-full"
+                value={larkDoc}
+                onChange={(e) => setLarkDoc(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault()
+                    void handleImportLarkDoc()
+                  }
+                }}
+                placeholder={t("sources.larkDocPlaceholder", {
+                  defaultValue: "Paste a Lark document URL or token",
+                })}
+                disabled={larkImporting}
+                autoFocus
+              />
+            </div>
+            {larkError && (
+              <div className="rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                {larkError}
+              </div>
+            )}
+          </div>
+          <DialogFooter className="[margin-bottom:0] [margin-left:0] [margin-right:0] shrink-0 rounded-none">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => setLarkDialogOpen(false)}
+              disabled={larkImporting}
+            >
+              {t("common.cancel", { defaultValue: "Cancel" })}
+            </Button>
+            {selectedLarkDocs.size > 0 && (
+              <Button type="button" onClick={handleImportSelectedLarkDocs} disabled={larkImporting}>
+                {larkImporting
+                  ? t("sources.importingLarkDoc", { defaultValue: "Importing..." })
+                  : t("sources.importSelectedLarkDocs", {
+                      count: selectedLarkDocs.size,
+                      defaultValue: "Import Selected",
+                    })}
+              </Button>
+            )}
+            <Button type="button" onClick={handleImportLarkDoc} disabled={larkImporting}>
+              {larkImporting
+                ? t("sources.importingLarkDoc", { defaultValue: "Importing..." })
+                : t("sources.importLarkDoc", { defaultValue: "Import Lark Doc" })}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </TooltipProvider>
   )
 }

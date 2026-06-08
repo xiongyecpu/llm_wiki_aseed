@@ -4,6 +4,8 @@ import {
   deleteFile,
   fileExists,
   getFileSize,
+  importLarkDoc,
+  type LarkDocImportResult,
   listDirectory,
   preprocessFile,
   readFile,
@@ -216,6 +218,30 @@ export async function importSourceFolder(
   }
 
   return allowedFiles
+}
+
+export async function importLarkDocSource(
+  project: WikiProject,
+  doc: string,
+  llmConfig: LlmConfig,
+): Promise<string> {
+  const result = await importLarkDoc(project.path, doc)
+  await enqueueSourceIngest(project, [result.path], llmConfig)
+  return result.path
+}
+
+export async function importLarkDocSources(
+  project: WikiProject,
+  docs: string[],
+  llmConfig: LlmConfig,
+): Promise<string[]> {
+  const imported: LarkDocImportResult[] = []
+  for (const doc of docs) {
+    imported.push(await importLarkDoc(project.path, doc))
+  }
+  const paths = imported.map((result) => result.path)
+  await enqueueSourceIngest(project, paths, llmConfig)
+  return paths
 }
 
 export async function deleteSourceFile(

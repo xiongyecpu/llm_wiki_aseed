@@ -79,6 +79,37 @@ export async function getFileMd5(path: string): Promise<string> {
   return invoke<string>("get_file_md5", { path })
 }
 
+export interface LarkDocImportResult {
+  path: string
+  title: string
+  documentId?: string
+  revisionId?: number
+}
+
+export interface LarkDocSearchResult {
+  id: string
+  title: string
+  url: string
+  docType?: string
+  owner?: string
+  updatedAt?: string
+  summary?: string
+}
+
+export async function importLarkDoc(
+  projectPath: string,
+  doc: string,
+): Promise<LarkDocImportResult> {
+  return invoke<LarkDocImportResult>("import_lark_doc", {
+    projectPath,
+    doc,
+  })
+}
+
+export async function searchLarkDocs(query: string): Promise<LarkDocSearchResult[]> {
+  return invoke<LarkDocSearchResult[]>("search_lark_docs", { query })
+}
+
 /** Mirror of `commands::fs::FileBase64` (Rust side). */
 export interface FileBase64 {
   base64: string
